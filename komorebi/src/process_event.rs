@@ -219,27 +219,9 @@ impl WindowManager {
                 already_moved_window_handles.remove(&window.hwnd);
             }
             WindowManagerEvent::FocusChange(_, window) => {
-                let workspace = self.focused_workspace_mut()?;
-                if !workspace
-                    .floating_windows()
-                    .iter()
-                    .any(|w| w.hwnd == window.hwnd)
-                {
-                    if let Some(w) = workspace.maximized_window() {
-                        if w.hwnd == window.hwnd {
-                            return Ok(());
-                        }
-                    }
-
-                    if let Some(monocle) = workspace.monocle_container() {
-                        if let Some(window) = monocle.focused_window() {
-                            window.focus(false)?;
-                        }
-                    } else {
-                        self.focused_workspace_mut()?
-                            .focus_container_by_window(window.hwnd)?;
-                    }
-                }
+                self.focused_workspace_mut()?
+                    .focus_container_by_window(window.hwnd)?;
+                WindowsApi::bring_window_to_top(window.hwnd())?;
             }
             WindowManagerEvent::Show(_, window) | WindowManagerEvent::Manage(window) => {
                 let mut switch_to = None;

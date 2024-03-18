@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 
@@ -23,16 +24,13 @@ use komorebi_core::Rect;
 use crate::container::Container;
 use crate::ring::Ring;
 use crate::static_config::WorkspaceConfig;
-use crate::window::Window;
+use crate::static_config::PokerConfig;
+use crate::window::{should_act, Window};
+use crate::REGEX_IDENTIFIERS;
 use crate::window::WindowDetails;
 use crate::windows_api::WindowsApi;
-use crate::BORDER_OFFSET;
-use crate::BORDER_WIDTH;
 use crate::DEFAULT_CONTAINER_PADDING;
 use crate::DEFAULT_WORKSPACE_PADDING;
-use crate::INITIAL_CONFIGURATION_LOADED;
-use crate::NO_TITLEBAR;
-use crate::REMOVE_TITLEBARS;
 
 #[allow(clippy::struct_field_names)]
 #[derive(
@@ -70,6 +68,7 @@ pub struct Workspace {
     resize_dimensions: Vec<Option<Rect>>,
     #[getset(get = "pub", set = "pub")]
     tile: bool,
+    pub is_poker_workspace: bool,
 }
 
 impl_ring_elements!(Workspace, Container);
@@ -92,6 +91,7 @@ impl Default for Workspace {
             latest_layout: vec![],
             resize_dimensions: vec![],
             tile: true,
+            is_poker_workspace: false,
         }
     }
 }
@@ -99,6 +99,7 @@ impl Default for Workspace {
 impl Workspace {
     pub fn load_static_config(&mut self, config: &WorkspaceConfig) -> Result<()> {
         self.name = Option::from(config.name.clone());
+        self.is_poker_workspace = config.name == "POKER";
 
         if config.container_padding.is_some() {
             self.set_container_padding(config.container_padding);
@@ -203,116 +204,103 @@ impl Workspace {
         Ok(())
     }
 
-    pub fn update(&mut self, work_area: &Rect, offset: Option<Rect>) -> Result<()> {
-        if !INITIAL_CONFIGURATION_LOADED.load(Ordering::SeqCst) {
+    pub fn update(&mut self, _work_area: &Rect, _offset: Option<Rect>) -> Result<()> {
+        if !self.is_poker_workspace {
             return Ok(());
         }
 
-        let container_padding = self.container_padding();
-        let mut adjusted_work_area = offset.map_or_else(
-            || *work_area,
-            |offset| {
-                let mut with_offset = *work_area;
-                with_offset.left += offset.left;
-                with_offset.top += offset.top;
-                with_offset.right -= offset.right;
-                with_offset.bottom -= offset.bottom;
+        let poker_config = PokerConfig::default();
+        let mut current_row = 0;
+        let active_window_border_width = 5;
+        let mut left = poker_config.at_left;
+        let mut top = poker_config.at_top;
 
-                with_offset
-            },
-        );
-
-        adjusted_work_area.add_padding(self.workspace_padding().unwrap_or_default());
-
-        self.enforce_resize_constraints();
-
-        if !self.layout_rules().is_empty() {
-            let mut updated_layout = None;
-
-            for rule in self.layout_rules() {
-                if self.containers().len() >= rule.0 {
-                    updated_layout = Option::from(rule.1.clone());
-                }
-            }
-
-            if let Some(updated_layout) = updated_layout {
-                if !matches!(updated_layout, Layout::Default(DefaultLayout::BSP)) {
-                    self.set_layout_flip(None);
-                }
-
-                self.set_layout(updated_layout);
-            }
+        let mut windows = vec![];
+        for container in self.containers_mut() {
+            windows.push(container.focused_window_mut());
         }
+        let windows_count = windows.len();
 
-        let managed_maximized_window = self.maximized_window().is_some();
+        for (i, window) in windows.into_iter().enumerate() {
+            if let Some(window) = window {
+                for poker_window in &poker_config.windows {
+                    let regex_identifiers = REGEX_IDENTIFIERS.lock();
+                    let title = window.title().unwrap();
+                    let exe_name = window.exe().unwrap();
+                    let class = window.class().unwrap();
+                    let path = window.path().unwrap();
 
-        if *self.tile() {
-            if let Some(container) = self.monocle_container_mut() {
-                if let Some(window) = container.focused_window_mut() {
-                    adjusted_work_area.add_padding(container_padding.unwrap_or_default());
-                    {
-                        let border_offset = BORDER_OFFSET.load(Ordering::SeqCst);
-                        adjusted_work_area.add_padding(border_offset);
-                        let width = BORDER_WIDTH.load(Ordering::SeqCst);
-                        adjusted_work_area.add_padding(width);
-                    }
-                    window.set_position(&adjusted_work_area, true)?;
-                };
-            } else if let Some(window) = self.maximized_window_mut() {
-                window.maximize();
-            } else if !self.containers().is_empty() {
-                let layouts = self.layout().as_boxed_arrangement().calculate(
-                    &adjusted_work_area,
-                    NonZeroUsize::new(self.containers().len()).ok_or_else(|| {
-                        anyhow!(
-                            "there must be at least one container to calculate a workspace layout"
-                        )
-                    })?,
-                    self.container_padding(),
-                    self.layout_flip(),
-                    self.resize_dimensions(),
-                );
+                    let should_act = should_act(
+                        &title,
+                        &exe_name,
+                        &class,
+                        &path,
+                        &poker_window.identifiers,
+                        &regex_identifiers,
+                    );
 
-                let should_remove_titlebars = REMOVE_TITLEBARS.load(Ordering::SeqCst);
-                let no_titlebar = NO_TITLEBAR.lock().clone();
+                    if should_act {
+                        tracing::info!("POKER WINDOW: {} {}", i, title);
 
-                let windows = self.visible_windows_mut();
-                for (i, window) in windows.into_iter().enumerate() {
-                    if let (Some(window), Some(layout)) = (window, layouts.get(i)) {
-                        if should_remove_titlebars && no_titlebar.contains(&window.exe()?) {
-                            window.remove_title_bar()?;
-                        } else if no_titlebar.contains(&window.exe()?) {
-                            window.add_title_bar()?;
+                        let row;
+
+                        if windows_count <= 6 {
+                            row = match i {
+                                0 => 1,
+                                1 => 1,
+                                2 => 2,
+                                3 => 2,
+                                4 => 3,
+                                5 => 3,
+                                6 => 4,
+                                7 => 4,
+                                _ => 1,
+                            };
+                        } else {
+                            row = match i {
+                                0 => 1,
+                                1 => 1,
+                                2 => 1,
+                                3 => 2,
+                                4 => 2,
+                                5 => 2,
+                                6 => 3,
+                                7 => 3,
+                                8 => 3,
+                                _ => 1,
+                            };
                         }
 
-                        // If a window has been unmaximized via toggle-maximize, this block
-                        // will make sure that it is unmaximized via restore_window
-                        if window.is_maximized() && !managed_maximized_window {
-                            WindowsApi::restore_window(window.hwnd());
+                        let width = poker_window.width;
+                        let height = poker_window.height;
+
+                        if current_row != row {
+                            left = poker_config.at_left;
+                            top = poker_config.at_top + (height + active_window_border_width) * (row - 1);
+                            current_row = row;
+
+                            if (windows_count == 3 && row == 2) || (windows_count == 5 && row == 3) {
+                                left += 325
+                            }
+
+                            if row == 3 {
+                                top -= 165
+                            }
                         }
 
-                        let mut rect = *layout;
-                        {
-                            let border_offset = BORDER_OFFSET.load(Ordering::SeqCst);
-                            rect.add_padding(border_offset);
+                        let mut rect: Rect = Rect::default();
+                        rect.left = left;
+                        rect.top = top + active_window_border_width;
+                        rect.right = width;
+                        rect.bottom = height;
 
-                            let width = BORDER_WIDTH.load(Ordering::SeqCst);
-                            rect.add_padding(width);
-                        }
+                        window.set_position(&rect, true)?;
 
-                        window.set_position(&rect, false)?;
+                        left = rect.left + width + active_window_border_width;
                     }
                 }
-
-                self.set_latest_layout(layouts);
             }
         }
-
-        // Always make sure that the length of the resize dimensions vec is the same as the
-        // number of layouts / containers. This should never actually truncate as the remove_window
-        // function takes care of cleaning up resize dimensions when destroying empty containers
-        let container_count = self.containers().len();
-        self.resize_dimensions_mut().resize(container_count, None);
 
         Ok(())
     }
@@ -802,108 +790,6 @@ impl Workspace {
         self.floating_windows_mut().push(window);
 
         Ok(())
-    }
-
-    fn enforce_resize_constraints(&mut self) {
-        match self.layout {
-            Layout::Default(DefaultLayout::BSP) => self.enforce_resize_constraints_for_bsp(),
-            Layout::Default(DefaultLayout::UltrawideVerticalStack) => {
-                self.enforce_resize_for_ultrawide();
-            }
-            _ => self.enforce_no_resize(),
-        }
-    }
-
-    fn enforce_resize_constraints_for_bsp(&mut self) {
-        for (i, rect) in self.resize_dimensions_mut().iter_mut().enumerate() {
-            if let Some(rect) = rect {
-                // Even containers can't be resized to the bottom
-                if i % 2 == 0 {
-                    rect.bottom = 0;
-                    // Odd containers can't be resized to the right
-                } else {
-                    rect.right = 0;
-                }
-            }
-        }
-
-        // The first container can never be resized to the left or the top
-        if let Some(Some(first)) = self.resize_dimensions_mut().first_mut() {
-            first.top = 0;
-            first.left = 0;
-        }
-
-        // The last container can never be resized to the bottom or the right
-        if let Some(Some(last)) = self.resize_dimensions_mut().last_mut() {
-            last.bottom = 0;
-            last.right = 0;
-        }
-    }
-
-    fn enforce_resize_for_ultrawide(&mut self) {
-        let resize_dimensions = self.resize_dimensions_mut();
-        match resize_dimensions.len() {
-            // Single window can not be resized at all
-            0 | 1 => self.enforce_no_resize(),
-            // Two windows can only be resized in the middle
-            2 => {
-                // Zero is actually on the right
-                if let Some(mut right) = resize_dimensions[0] {
-                    right.top = 0;
-                    right.bottom = 0;
-                    right.right = 0;
-                }
-
-                // One is on the left
-                if let Some(mut left) = resize_dimensions[1] {
-                    left.top = 0;
-                    left.bottom = 0;
-                    left.left = 0;
-                }
-            }
-            // Three or more windows means 0 is in center, 1 is at the left, 2.. are a vertical
-            // stack on the right
-            _ => {
-                // Central can be resized left or right
-                if let Some(mut right) = resize_dimensions[0] {
-                    right.top = 0;
-                    right.bottom = 0;
-                }
-
-                // Left one can only be resized to the right
-                if let Some(mut left) = resize_dimensions[1] {
-                    left.top = 0;
-                    left.bottom = 0;
-                    left.left = 0;
-                }
-
-                // Handle stack on the right
-                let stack_size = resize_dimensions[2..].len();
-                for (i, rect) in resize_dimensions[2..].iter_mut().enumerate() {
-                    if let Some(rect) = rect {
-                        // No containers can resize to the right
-                        rect.right = 0;
-
-                        // First container in stack cant resize up
-                        if i == 0 {
-                            rect.top = 0;
-                        } else if i == stack_size - 1 {
-                            // Last cant be resized to the bottom
-                            rect.bottom = 0;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    fn enforce_no_resize(&mut self) {
-        for rect in self.resize_dimensions_mut().iter_mut().flatten() {
-            rect.left = 0;
-            rect.right = 0;
-            rect.top = 0;
-            rect.bottom = 0;
-        }
     }
 
     pub fn new_monocle_container(&mut self) -> Result<()> {

@@ -104,6 +104,52 @@ pub struct WorkspaceConfig {
     pub workspace_rules: Option<Vec<IdWithIdentifier>>,
 }
 
+pub struct PokerWindows {
+    pub width: i32,
+    pub height: i32,
+    pub identifiers: Vec<IdWithIdentifier>,
+}
+pub struct PokerConfig {
+    pub at_left: i32,
+    pub at_top: i32,
+    pub windows: Vec<PokerWindows>,
+}
+
+impl Default for PokerConfig {
+    fn default() -> Self {
+        Self {
+            at_left: 600,
+            at_top: 0,
+            windows: vec![
+                PokerWindows {
+                    // https://scriptygoddess.com/resources/proportioncalc.htm
+                    width: 631, // minimum: 626
+                    height: 529, // minimum: 473
+                    identifiers: vec![
+                        IdWithIdentifier {
+                            id: String::from("Cash Game NLH"),
+                            kind: ApplicationIdentifier::Title,
+                            matching_strategy: Some(MatchingStrategy::Contains),
+                        },
+                    ],
+                },
+                PokerWindows {
+                    // https://scriptygoddess.com/resources/proportioncalc.htm
+                    width: 631, // minimum: 778
+                    height: 529, // minimum: 652
+                    identifiers: vec![
+                        IdWithIdentifier {
+                            id: String::from("NLHE"),
+                            kind: ApplicationIdentifier::Title,
+                            matching_strategy: Some(MatchingStrategy::Contains),
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+}
+
 impl From<&Workspace> for WorkspaceConfig {
     fn from(value: &Workspace) -> Self {
         let mut layout_rules = HashMap::new();

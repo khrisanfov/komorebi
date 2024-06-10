@@ -284,7 +284,7 @@ impl Workspace {
                             }
 
                             if row == 3 {
-                                top -= 165
+                                top -= 50
                             }
                         }
 

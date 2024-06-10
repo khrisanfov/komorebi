@@ -123,8 +123,8 @@ impl Default for PokerConfig {
             windows: vec![
                 PokerWindows {
                     // https://scriptygoddess.com/resources/proportioncalc.htm
-                    width: 631, // minimum: 626
-                    height: 529, // minimum: 473
+                    width: 648, // minimum: 626
+                    height: 490, // minimum: 473
                     identifiers: vec![
                         IdWithIdentifier {
                             id: String::from("Cash Game NLH"),
